@@ -19,15 +19,5 @@ Desktop.ini
 # Logs
 *.log
 
-# Secrets / keys (never commit private keys)
-.env
-*.pem
-*.key
-keys/
 
-# Wireshark captures (may be large)
-*.pcap
-*.pcapng
 
-# Wrong-keys test directory
-keys_wrong/
