@@ -1,0 +1,13 @@
+{
+    "listen_ip": "0.0.0.0",
+    "listen_port": 4433,
+    "server_private_key": "keys/server_private.pem",
+    "client_public_key": "keys/client_public.pem",
+    "whitelist_file": "config/whitelist.txt",
+    "rate_limit_requests_per_second": 10,
+    "rate_limit_burst": 20,
+    "max_connections_per_ip": 5,
+    "max_total_connections": 50,
+    "idle_timeout_seconds": 300,
+    "log_level": "INFO"
+}

@@ -1,0 +1,685 @@
+================================================================================
+       CUSTOM VPN IMPLEMENTATION — COMPLETE DEMO GUIDE
+       Step-by-Step Feature Demonstration
+================================================================================
+
+This guide walks through demonstrating ALL 6 security features of the Custom
+VPN implementation. Follow each section in order. You will need 3 PowerShell
+terminals open at the same time.
+
+PRE-REQUISITES:
+  - Python 3.12 installed (verify: python --version)
+  - Dependencies installed: pip install -r requirements.txt
+  - Keys generated: python scripts/generate_keys.py
+  - Wireshark installed (for traffic capture sections)
+
+NOTE: All commands assume you are in the project root directory:
+      cd C:\Users\rithv\Downloads\Jas\Custom-VPN-implementation
+
+
+================================================================================
+SECTION 0: SETUP (Run once before all demos)
+================================================================================
+
+Step 0.1 — Open 3 PowerShell terminals and cd into the project folder in each:
+
+    cd C:\Users\rithv\Downloads\Jas\Custom-VPN-implementation
+
+Step 0.2 — Install dependencies (if not already done):
+
+    pip install -r requirements.txt
+
+Step 0.3 — Generate RSA key pairs (if not already done):
+
+    python scripts/generate_keys.py
+
+    EXPECTED OUTPUT:
+    ┌─────────────────────────────────────────────────────────┐
+    │ Generating keys in ...\keys/                            │
+    │                                                         │
+    │   [OK] Server keypair: server_private.pem / server_...  │
+    │   [OK] Client keypair: client_private.pem / client_...  │
+    │                                                         │
+    │ Key distribution:                                       │
+    │   Server needs: server_private.pem + client_public.pem  │
+    │   Client needs: client_private.pem + server_public.pem  │
+    └─────────────────────────────────────────────────────────┘
+
+    WHAT THIS SHOWS:
+    - RSA-2048 key pairs are generated for both server and client
+    - Private keys stay with their owner; public keys are exchanged
+    - Keys are stored in PEM format in the keys/ directory
+
+Step 0.4 — Run unit tests to verify everything works:
+
+    python -m pytest crypto/test_crypto.py auth/test_auth.py -v
+
+    EXPECTED OUTPUT:
+    29 tests should all show PASSED, including:
+    - test_tamper_ciphertext_fails   (Integrity)
+    - test_hmac_tamper_detected      (Integrity)
+    - test_successful_handshake      (Authentication)
+    - test_wrong_server_key_fails    (Authentication)
+    - test_wrong_client_key_fails    (Authentication)
+    - test_sign_verify               (Non-Repudiation)
+
+
+================================================================================
+FEATURE 1: CONFIDENTIALITY
+"Protecting data from unauthorized disclosure"
+================================================================================
+
+We will show that all traffic through the VPN tunnel is encrypted using
+AES-256-GCM. No plaintext HTTP content, URLs, or headers are visible on
+the wire.
+
+--- PART A: Capture BASELINE (plaintext, no VPN) ---
+
+Step 1.1 — Open Wireshark
+    - Select your MAIN NETWORK ADAPTER (Wi-Fi or Ethernet) — NOT Loopback!
+      The direct request goes to the internet, so it uses your real adapter.
+    - To find the right one: look for the adapter that shows activity
+      (the sparkline graph next to it)
+    - Start capturing
+
+Step 1.2 — Make a direct HTTP request (no proxy, no VPN):
+
+    In Terminal 3, run:
+
+    python -c "import urllib.request; r = urllib.request.urlopen('http://httpbin.org/get'); print(r.read().decode())"
+
+Step 1.3 — In Wireshark:
+    - Stop capture
+    - Apply display filter:  http
+    - If no results, try:    tcp.port == 80
+    - Or search by host:     http.host contains "httpbin"
+    - OBSERVATION: You can see the FULL HTTP request and response in
+      plaintext. The URL "httpbin.org/get", all HTTP headers, and the
+      JSON response body are completely readable.
+    - Click on any HTTP packet → look at the bottom pane → you can read
+      the entire request/response in plain English
+    - Save as: baseline_plaintext.pcapng
+
+    NOTE ON ADAPTERS:
+    ┌─────────────────────────────────────────────────────────┐
+    │ Baseline (direct to internet) → Wi-Fi / Ethernet       │
+    │ Encrypted tunnel (127.0.0.1)  → Loopback / Npcap       │
+    │                                                         │
+    │ These are DIFFERENT adapters in Wireshark!               │
+    └─────────────────────────────────────────────────────────┘
+
+--- PART B: Capture ENCRYPTED tunnel traffic ---
+
+Step 1.4 — Start a NEW Wireshark capture
+    - Apply capture filter: port 4433
+    - Start capturing
+
+Step 1.5 — Start the VPN server (Terminal 1):
+
+    python -m server.server_main --listen-ip 127.0.0.1 --log-level INFO
+
+    EXPECTED OUTPUT:
+    ┌─────────────────────────────────────────────────────────┐
+    │ [vpn.server] INFO  RSA keys loaded                      │
+    │ [vpn.access_control] INFO  Loaded 4 whitelist entries   │
+    │ [vpn.server] INFO  VPN Server listening on 127.0.0.1:4433│
+    └─────────────────────────────────────────────────────────┘
+
+Step 1.6 — Start the VPN client proxy (Terminal 2):
+
+    python -m client.client_proxy --server-host 127.0.0.1 --server-port 4433 --log-level INFO
+
+    EXPECTED OUTPUT:
+    ┌─────────────────────────────────────────────────────────┐
+    │ [vpn.client_proxy] INFO  Connecting to VPN server...    │
+    │ [vpn.tunnel_client] INFO  TCP connected, starting ...   │
+    │ [vpn.handshake] INFO  TX ClientHello  nonce=...         │
+    │ [vpn.handshake] INFO  Server signature verified ✓       │
+    │ [vpn.handshake] INFO  TX ClientResponse                 │
+    │ [vpn.handshake] INFO  Handshake complete — session ...  │
+    │ [vpn.tunnel_client] INFO  Tunnel established            │
+    │ [vpn.client_proxy] INFO  Local proxy listening on       │
+    │                          127.0.0.1:8888                 │
+    └─────────────────────────────────────────────────────────┘
+
+Step 1.7 — Make a request THROUGH the VPN tunnel (Terminal 3):
+
+    python -c "import urllib.request; h=urllib.request.ProxyHandler({'http':'http://127.0.0.1:8888'}); o=urllib.request.build_opener(h); r=o.open('http://httpbin.org/get',timeout=15); print('Status:',r.getcode()); print(r.read().decode())"
+
+    EXPECTED OUTPUT:
+    ┌─────────────────────────────────────────────────────────┐
+    │ Status: 200                                             │
+    │ {                                                       │
+    │   "args": {},                                           │
+    │   "headers": { ... },                                   │
+    │   "origin": "YOUR.SERVER.IP",                           │
+    │   "url": "http://httpbin.org/get"                       │
+    │ }                                                       │
+    └─────────────────────────────────────────────────────────┘
+
+Step 1.8 — In Wireshark:
+    - Stop capture
+    - Apply display filter: tcp.port == 4433
+    - OBSERVATION: All packets on port 4433 contain ONLY encrypted binary
+      data. You CANNOT see:
+        * The URL "httpbin.org/get"
+        * Any HTTP headers
+        * The JSON response body
+        * Any readable text whatsoever
+    - Compare this to the baseline capture — the difference is stark.
+    - Save as: tunnel_encrypted.pcapng
+
+    CONCLUSION: AES-256-GCM encryption ensures CONFIDENTIALITY.
+    All tunnel traffic is unreadable without the session key.
+
+--- Leave server and client RUNNING for the next sections ---
+
+
+================================================================================
+FEATURE 2: INTEGRITY
+"Ensuring data is not altered or tampered with"
+================================================================================
+
+Every frame in the VPN tunnel has an HMAC-SHA256 signature covering the
+entire frame (msg_type + session_id + nonce + encrypted_payload). If any
+byte is changed, the HMAC check fails and the frame is rejected.
+
+Step 2.1 — Run the tamper detection unit test:
+
+    python -m pytest crypto/test_crypto.py::TestFraming::test_hmac_tamper_detected -v
+
+    EXPECTED OUTPUT:
+    ┌─────────────────────────────────────────────────────────┐
+    │ test_hmac_tamper_detected PASSED                        │
+    └─────────────────────────────────────────────────────────┘
+
+    WHAT THIS PROVES:
+    - A frame was sent over a real TCP socket
+    - One byte in the frame body was flipped (XOR 0xFF)
+    - recv_frame() detected the tampering via HMAC verification
+    - A ValueError("HMAC verification failed") was raised
+    - The tampered frame was REJECTED — no data was accepted
+
+Step 2.2 — Run ALL integrity-related tests:
+
+    python -m pytest crypto/test_crypto.py::TestAESGCM::test_tamper_ciphertext_fails crypto/test_crypto.py::TestHMAC::test_tampered_data_fails crypto/test_crypto.py::TestHMAC::test_wrong_key_fails crypto/test_crypto.py::TestFraming::test_hmac_tamper_detected -v
+
+    EXPECTED OUTPUT: 4 tests, all PASSED
+
+    WHAT THIS PROVES:
+    - Tampered AES-GCM ciphertext → InvalidTag exception (payload level)
+    - Tampered data → HMAC mismatch (frame level)
+    - Wrong HMAC key → verification fails
+    - Tampered frame over TCP → detected and rejected
+
+Step 2.3 — LIVE TAMPER ATTACK DEMO (best proof for presentation):
+
+    This script connects to the running server, sends a valid request
+    (which succeeds), then sends a TAMPERED frame (corrupted bytes) and
+    shows the server detecting and rejecting it in real-time.
+
+    Make sure the server is still running in Terminal 1, then run
+    in Terminal 3:
+
+    python scripts/tamper_demo.py
+
+    EXPECTED OUTPUT:
+    ┌─────────────────────────────────────────────────────────┐
+    │ ============================================================ │
+    │   INTEGRITY DEMO — Tamper Detection in Action                │
+    │ ============================================================ │
+    │                                                               │
+    │ [Step 1] Connecting to server and performing handshake...     │
+    │   [OK] Handshake complete. Session: 44cef3ab2c55             │
+    │                                                               │
+    │ [Step 2] Sending a NORMAL (valid) request...                 │
+    │   [OK] Server accepted the request!                          │
+    │   [OK] Response status: 200                                  │
+    │   [OK] HMAC verified, AES-GCM decrypted successfully         │
+    │                                                               │
+    │ [Step 3] Sending a TAMPERED frame (flipping bytes)...        │
+    │   Flipping byte at position 38 (inside encrypted payload)    │
+    │   Original byte: 0x94 -> Tampered: 0x6B                     │
+    │   Sending tampered frame to server...                        │
+    │   [DETECTED!] Server closed the connection!                  │
+    │   The HMAC check failed — tampered frame was REJECTED        │
+    │                                                               │
+    │ ============================================================ │
+    │   RESULT SUMMARY                                             │
+    │   Step 2: Valid frame    -> Server ACCEPTED (HMAC OK)        │
+    │   Step 3: Tampered frame -> Server REJECTED (HMAC FAILED)    │
+    │ ============================================================ │
+    └─────────────────────────────────────────────────────────────┘
+
+    WHAT THIS PROVES:
+    - A valid encrypted frame was accepted by the server (status 200)
+    - The SAME frame with 3 bytes flipped was IMMEDIATELY REJECTED
+    - The HMAC-SHA256 check detected that the frame had been modified
+    - The server CLOSED the connection to protect against the attack
+    - No tampered data was ever processed or forwarded
+
+    NOW CHECK THE SERVER TERMINAL (Terminal 1) — you will see:
+    ┌─────────────────────────────────────────────────────────┐
+    │ [vpn.server] INFO  HANDSHAKE_OK  ip=127.0.0.1          │
+    │ [vpn.forwarder] INFO  FORWARD  GET http://httpbin.org/ip│
+    │ [vpn.forwarder] INFO  RESPONSE  ... → 200               │
+    │ [vpn.server] WARNING  FRAME_ERROR  ip=127.0.0.1        │  ← HERE!
+    │                        error=HMAC verification failed    │  ← HERE!
+    │ [vpn.server] INFO  CLIENT_CLOSED  ip=127.0.0.1         │
+    └─────────────────────────────────────────────────────────┘
+
+    This is the WARNING log you were looking for — it only appears
+    when an actual tampered frame is received!
+
+Step 2.4 — Understand what normal server logs tell you about integrity:
+
+    During normal operation (no attacks), you see:
+        [vpn.forwarder] INFO  FORWARD  GET http://httpbin.org/get
+        [vpn.forwarder] INFO  RESPONSE  GET http://httpbin.org/get → 200
+
+    The fact that these lines appear means EVERY frame passed both:
+      - HMAC-SHA256 verification (frame level)
+      - AES-GCM authentication tag verification (payload level)
+
+    FOR YOUR PRESENTATION, show:
+      1. The tamper_demo.py output (Step 2.3 — proves tamper = rejected)
+      2. The server WARNING log: FRAME_ERROR + HMAC verification failed
+      3. The 4 PASSED unit tests from Step 2.2
+      4. The normal server logs (proves every real frame passes integrity)
+
+    CONCLUSION: HMAC-SHA256 on every frame + AES-GCM authentication tags
+    ensure INTEGRITY. Any tampering is detected and the frame is rejected.
+
+
+
+================================================================================
+FEATURE 3: AUTHENTICATION
+"Verifying the identities of communicating entities"
+================================================================================
+
+The VPN uses MUTUAL authentication — both client and server prove their
+identity using a challenge-response protocol with RSA digital signatures
+BEFORE any data is exchanged.
+
+Step 3.1 — Observe the handshake in the logs:
+
+    Look at Terminal 2 (client). When it connected, you saw:
+    ┌─────────────────────────────────────────────────────────┐
+    │ TX ClientHello  nonce=...         ← Client sends nonce  │
+    │ Server signature verified ✓       ← Client verifies     │
+    │                                      server's RSA sig   │
+    │ TX ClientResponse                 ← Client sends its    │
+    │                                      own RSA signature  │
+    │ Handshake complete — session ...  ← Both sides verified │
+    └─────────────────────────────────────────────────────────┘
+
+    Look at Terminal 1 (server). You saw:
+    ┌─────────────────────────────────────────────────────────┐
+    │ HANDSHAKE_START  ip=127.0.0.1                           │
+    │ RX ClientHello  nonce=...         ← Server receives     │
+    │ TX ServerHello                    ← Server sends its     │
+    │                                      nonce + RSA sig    │
+    │ Client signature verified ✓       ← Server verifies     │
+    │                                      client's RSA sig   │
+    │ HANDSHAKE_OK  ip=127.0.0.1  session=...                 │
+    └─────────────────────────────────────────────────────────┘
+
+Step 3.2 — Demo: WRONG CLIENT KEY → Authentication fails
+
+    First, stop the client (Ctrl+C in Terminal 2).
+
+    Generate a WRONG key pair:
+
+    python -c "from auth.key_manager import generate_rsa_keypair, save_private_key, save_public_key; import os; os.makedirs('keys_wrong',exist_ok=True); p,u=generate_rsa_keypair(); save_private_key(p,'keys_wrong/client_private.pem'); save_public_key(u,'keys_wrong/client_public.pem'); print('Wrong keys generated in keys_wrong/')"
+
+    Now start the client with the WRONG key (Terminal 2):
+
+    python -m client.client_proxy --server-host 127.0.0.1 --server-port 4433 --client-key keys_wrong/client_private.pem --log-level INFO
+
+    EXPECTED OUTPUT (Terminal 2 — client):
+    ┌─────────────────────────────────────────────────────────┐
+    │ TX ClientHello  nonce=...                               │
+    │ Server signature verified ✓                             │
+    │ TX ClientResponse                                       │
+    │ ... Connection error / handshake failed ...              │
+    └─────────────────────────────────────────────────────────┘
+
+    EXPECTED OUTPUT (Terminal 1 — server):
+    ┌─────────────────────────────────────────────────────────┐
+    │ HANDSHAKE_START  ip=127.0.0.1                           │
+    │ RX ClientHello  nonce=...                               │
+    │ TX ServerHello                                          │
+    │ Client signature verification FAILED                    │
+    │ HANDSHAKE_FAILED  ip=127.0.0.1  error=...               │
+    │ CLIENT_CLOSED  ip=127.0.0.1                             │
+    └─────────────────────────────────────────────────────────┘
+
+    WHAT THIS PROVES:
+    - The server REJECTED the client because its RSA signature did not
+      match the expected public key
+    - No data was proxied — the connection was closed at the handshake
+    - An attacker cannot impersonate a legitimate client
+
+Step 3.3 — Run the authentication unit tests:
+
+    python -m pytest auth/test_auth.py::TestHandshake -v
+
+    EXPECTED OUTPUT:
+    ┌─────────────────────────────────────────────────────────┐
+    │ test_successful_handshake       PASSED                  │
+    │ test_wrong_server_key_fails     PASSED                  │
+    │ test_wrong_client_key_fails     PASSED                  │
+    └─────────────────────────────────────────────────────────┘
+
+Step 3.4 — Restart the client with CORRECT keys for the remaining demos:
+
+    Stop the wrong-key client (Ctrl+C in Terminal 2), then:
+
+    python -m client.client_proxy --server-host 127.0.0.1 --server-port 4433 --log-level INFO
+
+    Verify it says "Tunnel established!" before proceeding.
+
+    CONCLUSION: Mutual challenge-response with RSA signatures ensures
+    AUTHENTICATION. Both sides must prove possession of the correct
+    private key before any data is exchanged.
+
+
+================================================================================
+FEATURE 4: NON-REPUDIATION
+"Ensuring parties cannot deny their actions"
+================================================================================
+
+During the handshake, both client and server produce RSA-PSS digital
+signatures over the handshake nonces. These signatures are cryptographic
+proof that each party participated in the session.
+
+Step 4.1 — The signatures are visible in the handshake logs:
+
+    Client (Terminal 2):
+        "Server signature verified ✓"
+        → The server signed (nonce_client || nonce_server) with its
+          RSA private key. The client verified it with the server's
+          public key.
+        → The client then signed (nonce_server || nonce_client) with
+          its own RSA private key.
+
+    Server (Terminal 1):
+        "Client signature verified ✓"
+        → The server verified the client's RSA-PSS signature.
+
+Step 4.2 — Run the digital signature tests:
+
+    python -m pytest auth/test_auth.py::TestSignatures -v
+
+    EXPECTED OUTPUT:
+    ┌─────────────────────────────────────────────────────────┐
+    │ test_sign_verify          PASSED                        │
+    │ test_wrong_data_fails     PASSED                        │
+    │ test_wrong_key_fails      PASSED                        │
+    └─────────────────────────────────────────────────────────┘
+
+Step 4.3 — Explain what's happening (for presentation):
+
+    The handshake does this:
+      1. Client sends ClientHello with a random nonce
+      2. Server sends ServerHello with its own nonce + RSA-PSS signature
+         over (nonce_client || nonce_server)
+      3. Client verifies the server signature, then sends ClientResponse
+         with its own RSA-PSS signature over (nonce_server || nonce_client)
+      4. Server verifies the client signature
+
+    WHY THIS IS NON-REPUDIATION:
+    - RSA-PSS signatures can only be produced by the holder of the
+      private key
+    - A third party with the public key can verify the signature
+    - Neither side can later deny they participated in the session
+    - The nonces prevent replay — each handshake is unique
+
+    CONCLUSION: RSA-PSS digital signatures during session establishment
+    ensure NON-REPUDIATION.
+
+
+================================================================================
+FEATURE 5: AVAILABILITY
+"Reliable access to services and resistance to denial-of-service"
+================================================================================
+
+The VPN server implements multiple availability protections:
+  - Token-bucket rate limiting (per-IP)
+  - Per-IP connection caps
+  - Global connection caps  
+  - Idle connection timeouts
+
+--- PART A: Demonstrate rate limiting ---
+
+Step 5.1 — First, tighten the rate limit for easy demonstration.
+            Edit config/server_config.json and change:
+                "rate_limit_requests_per_second": 1
+                "rate_limit_burst": 2
+
+    Or run this command (Terminal 3):
+
+    python -c "import json,pathlib; c=json.loads(pathlib.Path('config/server_config.json').read_text()); c['rate_limit_requests_per_second']=1; c['rate_limit_burst']=2; pathlib.Path('config/server_config.json').write_text(json.dumps(c,indent=4)); print('Rate limit set to 1 req/s, burst 2')"
+
+Step 5.2 — Restart the server (Ctrl+C in Terminal 1, then re-run):
+
+    python -m server.server_main --listen-ip 127.0.0.1 --log-level INFO
+
+Step 5.3 — Restart the client (Ctrl+C in Terminal 2, then re-run):
+
+    python -m client.client_proxy --server-host 127.0.0.1 --server-port 4433 --log-level INFO
+
+Step 5.4 — Send rapid requests (Terminal 3):
+
+    python -c "import urllib.request,time; proxy=urllib.request.ProxyHandler({'http':'http://127.0.0.1:8888'}); opener=urllib.request.build_opener(proxy); [print(f'Req {i+1}:', end=' ') or print(f'Status {opener.open(\"http://httpbin.org/ip\",timeout=10).getcode()}  ({time.time()-t:.1f}s)') if not (t:=time.time()) or True else None for i in range(6)]"
+
+    Or for a cleaner version, run:
+
+    python scripts/load_test.py --requests 30 --threads 5
+
+Step 5.5 — Check the server logs (Terminal 1):
+
+    EXPECTED OUTPUT:
+    ┌─────────────────────────────────────────────────────────┐
+    │ [vpn.forwarder] INFO  FORWARD  GET http://httpbin.org/ip│
+    │ [vpn.forwarder] INFO  RESPONSE  ... → 200               │
+    │ [vpn.forwarder] INFO  FORWARD  GET http://httpbin.org/ip│
+    │ [vpn.forwarder] INFO  RESPONSE  ... → 200               │
+    │ [vpn.rate_limit] INFO  RATE_LIMITED  ip=127.0.0.1       │  ← HERE!
+    │ [vpn.server] WARNING  RATE_LIMITED  ip=127.0.0.1        │  ← HERE!
+    │                       session=...                        │
+    └─────────────────────────────────────────────────────────┘
+
+    WHAT THIS PROVES:
+    - The first 2-3 requests succeeded (burst allowance)
+    - After that, the token bucket was empty
+    - The server responded with "Rate limit exceeded" ERROR frame
+    - The client automatically reconnected (with a new handshake)
+    - This prevents a single IP from flooding the server
+
+Step 5.6 — Restore the rate limit to normal:
+
+    python -c "import json,pathlib; c=json.loads(pathlib.Path('config/server_config.json').read_text()); c['rate_limit_requests_per_second']=10; c['rate_limit_burst']=20; pathlib.Path('config/server_config.json').write_text(json.dumps(c,indent=4)); print('Rate limit restored to 10 req/s, burst 20')"
+
+--- PART B: Connection caps ---
+
+    The server also enforces:
+    - max_connections_per_ip: 5  (no single IP can open more than 5 tunnels)
+    - max_total_connections: 50  (global cap)
+    - idle_timeout_seconds: 300  (inactive connections are dropped)
+
+    These are configured in config/server_config.json and enforced by
+    server/rate_limit.py (RateLimiter class using token-bucket algorithm).
+
+    CONCLUSION: Token-bucket rate limiting + connection caps + idle
+    timeouts ensure AVAILABILITY and resist denial-of-service attacks.
+
+
+================================================================================
+FEATURE 6: ACCESS CONTROL AND AUTHORIZATION
+"Regulating access to resources based on security policies"
+================================================================================
+
+The VPN server implements IP whitelisting — only clients connecting from
+whitelisted IP addresses (or CIDR ranges) are allowed to establish a
+session. All others are immediately rejected.
+
+Step 6.1 — Show the current whitelist:
+
+    type config\whitelist.txt
+
+    EXPECTED OUTPUT:
+    ┌─────────────────────────────────────────────────────────┐
+    │ # VPN Server — IP Whitelist                             │
+    │ 127.0.0.1                                               │
+    │ 192.168.0.0/16                                          │
+    │ 10.0.0.0/8                                              │
+    │ 172.16.0.0/12                                           │
+    └─────────────────────────────────────────────────────────┘
+
+Step 6.2 — Verify the current client works (Terminal 3):
+
+    python -c "import urllib.request; h=urllib.request.ProxyHandler({'http':'http://127.0.0.1:8888'}); o=urllib.request.build_opener(h); r=o.open('http://httpbin.org/ip',timeout=10); print('OK - Status:',r.getcode())"
+
+    EXPECTED: "OK - Status: 200" — connection from 127.0.0.1 is allowed.
+
+Step 6.3 — Now BLOCK the client by removing 127.0.0.1 from the whitelist.
+
+    Stop the server (Ctrl+C in Terminal 1).
+    Stop the client (Ctrl+C in Terminal 2).
+
+    Create a restrictive whitelist:
+
+    echo 203.0.113.1 > config\whitelist.txt
+
+    (This only allows IP 203.0.113.1 — our local IP 127.0.0.1 is NOT listed)
+
+Step 6.4 — Restart the server (Terminal 1):
+
+    python -m server.server_main --listen-ip 127.0.0.1 --log-level INFO
+
+Step 6.5 — Try to start the client (Terminal 2):
+
+    python -m client.client_proxy --server-host 127.0.0.1 --server-port 4433 --log-level INFO
+
+    EXPECTED OUTPUT (Terminal 2 — client):
+    ┌─────────────────────────────────────────────────────────┐
+    │ Connecting to VPN server...                             │
+    │ TCP connected, starting handshake ...                   │
+    │ ... Connection error / handshake failed ...              │
+    └─────────────────────────────────────────────────────────┘
+
+    EXPECTED OUTPUT (Terminal 1 — server):
+    ┌─────────────────────────────────────────────────────────┐
+    │ CONN_ACCEPT  ip=127.0.0.1  port=...                     │
+    │ [vpn.access_control] INFO  BLOCKED  ip=127.0.0.1        │
+    │                            (not in whitelist)            │
+    │ [vpn.server] WARNING  AUTH_DENIED  ip=127.0.0.1         │
+    │                       reason=whitelist                   │
+    └─────────────────────────────────────────────────────────┘
+
+    WHAT THIS PROVES:
+    - The client's IP (127.0.0.1) was NOT in the whitelist
+    - The server IMMEDIATELY rejected the connection
+    - No handshake was even attempted — rejected at the IP level
+    - The server logged the rejection for audit purposes
+
+Step 6.6 — Restore the whitelist (Terminal 3):
+
+    (echo # VPN Server — IP Whitelist & echo 127.0.0.1 & echo 192.168.0.0/16 & echo 10.0.0.0/8 & echo 172.16.0.0/12) > config\whitelist.txt
+
+Step 6.7 — Restart server and client to restore normal operation:
+
+    Terminal 1: Ctrl+C, then:
+    python -m server.server_main --listen-ip 127.0.0.1 --log-level INFO
+
+    Terminal 2:
+    python -m client.client_proxy --server-host 127.0.0.1 --server-port 4433 --log-level INFO
+
+    CONCLUSION: IP whitelisting with CIDR support ensures ACCESS CONTROL.
+    Only authorized IP addresses can establish VPN sessions.
+
+
+================================================================================
+WIRESHARK TRAFFIC COMPARISON (for presentation screenshots)
+================================================================================
+
+For your report/presentation, capture these side-by-side comparisons:
+
+Screenshot 1: BASELINE (no VPN)
+  - Wireshark filter: http
+  - Shows: Full plaintext HTTP request and response
+  - Highlight: URL, headers, response body are all readable
+
+Screenshot 2: ENCRYPTED TUNNEL
+  - Wireshark filter: tcp.port == 4433
+  - Shows: Binary encrypted data only
+  - Highlight: No readable HTTP content whatsoever
+
+Screenshot 3: HANDSHAKE
+  - Wireshark filter: tcp.port == 4433
+  - Shows: First 4 TCP segments = handshake messages
+  - Highlight: ClientHello → ServerHello → ClientResponse → ServerDone
+
+Screenshot 4: RATE LIMITING
+  - Server terminal showing RATE_LIMITED log entries
+  - Client showing automatic reconnection after throttling
+
+Screenshot 5: ACCESS CONTROL
+  - Server terminal showing AUTH_DENIED reason=whitelist
+
+Useful Wireshark display filters:
+  tcp.port == 4433                    All tunnel traffic
+  tcp.port == 4433 && tcp.len > 0     Only data frames (skip ACKs)
+  http                                Baseline plaintext HTTP
+  tcp.flags.reset == 1                Connection resets (rate limiting)
+
+
+================================================================================
+CLEANUP
+================================================================================
+
+When done with the demo:
+
+Step C.1 — Stop the client (Ctrl+C in Terminal 2)
+Step C.2 — Stop the server (Ctrl+C in Terminal 1)
+Step C.3 — (Optional) Remove wrong keys: rmdir /s /q keys_wrong
+Step C.4 — Verify whitelist is restored: type config\whitelist.txt
+Step C.5 — Verify config is restored: type config\server_config.json
+
+
+================================================================================
+QUICK REFERENCE: FEATURE → EVIDENCE MAP
+================================================================================
+
+  FEATURE             EVIDENCE
+  ─────────────────── ──────────────────────────────────────────
+  Confidentiality     Wireshark: encrypted vs plaintext capture
+                      Code: crypto/crypto_utils.py (AES-256-GCM)
+
+  Integrity           Live: python scripts/tamper_demo.py
+                      Server log: "FRAME_ERROR  HMAC verification failed"
+                      Test: test_hmac_tamper_detected PASSED
+                      Code: crypto/protocol.py (HMAC-SHA256 on
+                            every frame)
+
+  Authentication      Server log: "Client signature verified ✓"
+                      Server log: "HANDSHAKE_FAILED" with wrong key
+                      Code: auth/handshake.py (mutual challenge-
+                            response)
+
+  Non-Repudiation     Server/Client logs: RSA-PSS signatures
+                      Test: test_sign_verify PASSED
+                      Code: auth/signatures.py (RSA-PSS SHA-256)
+
+  Availability        Server log: "RATE_LIMITED ip=..."
+                      Code: server/rate_limit.py (token bucket +
+                            connection caps + idle timeout)
+
+  Access Control      Server log: "AUTH_DENIED reason=whitelist"
+                      Code: server/access_control.py (IP whitelist
+                            with CIDR support)
+
+================================================================================
+                        END OF DEMO GUIDE
+================================================================================

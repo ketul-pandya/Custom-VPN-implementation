@@ -7,7 +7,7 @@ import time # For potential retries or delays, though not used heavily here
 # --- Configuration ---
 # Where the client script listens for the BROWSER connection
 LOCAL_PROXY_IP = '127.0.0.1' # Listen only on the local machine
-LOCAL_PROXY_PORT = 8080      # Port your browser will connect to
+LOCAL_PROXY_PORT = 8888      # Port your browser will connect to
 
 # Where the ACTUAL VPN/Proxy Server is running
 REMOTE_SERVER_IP = '0.tcp.in.ngrok.io' # Public IP of the server machine

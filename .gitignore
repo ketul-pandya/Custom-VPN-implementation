@@ -19,7 +19,15 @@ Desktop.ini
 # Logs
 *.log
 
-# Secrets / local config (keep keys out of git if you add them later)
+# Secrets / keys (never commit private keys)
 .env
 *.pem
 *.key
+keys/
+
+# Wireshark captures (may be large)
+*.pcap
+*.pcapng
+
+# Wrong-keys test directory
+keys_wrong/
